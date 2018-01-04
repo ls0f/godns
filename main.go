@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
@@ -9,10 +11,22 @@ import (
 )
 
 var (
-	logger *GoDNSLogger
+	logger  *GoDNSLogger
+	GitTag  = "dev"
+	Version = "0.1.1"
+	Build   = "2017-01-01"
+	version = flag.Bool("v", false, "version")
 )
 
 func main() {
+
+	flag.Parse()
+	if *version {
+		fmt.Fprintf(os.Stdout, "GitTag: %s\n", GitTag)
+		fmt.Fprintf(os.Stdout, "Version: %s\n", Version)
+		fmt.Fprintf(os.Stdout, "Build: %s\n", Build)
+		return
+	}
 
 	initLogger()
 

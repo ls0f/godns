@@ -48,7 +48,6 @@ type DNSServerSettings struct {
 type RedisSettings struct {
 	Host     string
 	Port     int
-	DB       int
 	Password string
 }
 

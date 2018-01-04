@@ -9,7 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hoisie/redis"
+	cluster2 "github.com/mediocregopher/radix.v2/cluster"
+	"github.com/mediocregopher/radix.v2/redis"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -27,11 +28,34 @@ func NewHosts(hs HostsSettings, rs RedisSettings) Hosts {
 
 	var redisHosts *RedisHosts
 	if hs.RedisEnable {
-		rc := &redis.Client{Addr: rs.Addr(), Db: rs.DB, Password: rs.Password}
-		redisHosts = &RedisHosts{
-			redis: rc,
-			key:   hs.RedisKey,
-			hosts: make(map[string]string),
+		rc, err := cluster2.NewWithOpts(cluster2.Opts{
+			Addr: rs.Addr(),
+			Dialer: func(network, addr string) (cli *redis.Client, err error) {
+				conn, err := redis.DialTimeout(network, addr, 2*time.Second)
+				if err != nil {
+					return nil, err
+				}
+				if rs.Password != "" {
+					if conn.Cmd("AUTH", rs.Password).Err != nil {
+						logger.Error(err.Error())
+						return nil, err
+					}
+				}
+				return conn, nil
+
+			},
+		})
+		if err != nil {
+			logger.Error(err.Error())
+		} else {
+
+			redisHosts = &RedisHosts{
+				redis: rc,
+				key:   hs.RedisKey,
+				hosts: make(map[string]string),
+			}
+
+			go redisHosts.KeepAlive()
 		}
 	}
 
@@ -95,10 +119,37 @@ func (h *Hosts) refresh() {
 }
 
 type RedisHosts struct {
-	redis *redis.Client
-	key   string
-	hosts map[string]string
-	mu    sync.RWMutex
+	redis        *cluster2.Cluster
+	key          string
+	hosts        map[string]string
+	mu           sync.RWMutex
+	pingInterval time.Duration
+}
+
+func (r *RedisHosts) KeepAlive() {
+	if r.pingInterval == 0 {
+		r.pingInterval = time.Second * 60
+	}
+	for {
+		<-time.After(r.pingInterval)
+		// redis cluster heart beat.
+		clients, err := r.redis.GetEvery()
+		if err != nil {
+			logger.Error(err.Error())
+			// unable to do redis heart beat, log the error.
+			continue
+		}
+		for _, c := range clients {
+			if err := c.Cmd("PING").Err; err != nil {
+				logger.Error("redis ping: %s", err)
+				// unable to keep redis conn alive, log the error.
+				c.Close()
+				continue
+			}
+			r.redis.Put(c)
+		}
+		// finished redis heart beat.
+	}
 }
 
 func (r *RedisHosts) Get(domain string) ([]string, bool) {
@@ -133,14 +184,16 @@ func (r *RedisHosts) Get(domain string) ([]string, bool) {
 func (r *RedisHosts) Set(domain, ip string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.redis.Hset(r.key, strings.ToLower(domain), []byte(ip))
+	return true, r.redis.Cmd("HSET", r.key, strings.ToLower(domain), []byte(ip)).Err
 }
 
 func (r *RedisHosts) Refresh() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clear()
-	err := r.redis.Hgetall(r.key, r.hosts)
+	rsp := r.redis.Cmd("HGETALL", r.key)
+	var err error
+	r.hosts, err = rsp.Map()
 	if err != nil {
 		logger.Warn("Update hosts records from redis failed %s", err)
 	} else {
