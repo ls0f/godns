@@ -1,0 +1,9 @@
+/var/log/godns.log {
+daily
+rotate 7
+missingok
+compress
+delaycompress
+notifempty
+copytruncate
+}
